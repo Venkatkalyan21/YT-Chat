@@ -92,6 +92,22 @@ docker compose up --build
 
 This starts Postgres 17 with pgvector and the app on http://localhost:8000.
 
+## Deploy (Render + Neon, free tiers)
+
+YouTube blocks transcript requests from most cloud servers, so the public demo serves videos you index beforehand from your own computer, and refuses new links (`ALLOW_NEW_VIDEOS=false`). Visitors can still read summaries and ask questions, within rate limits.
+
+1. **Database:** create a free [Neon](https://neon.tech) project and copy its connection string (it supports the `vector` extension; YtChat creates the tables on first start).
+2. **Index the demo videos from your computer** into that database. They're stored with their summaries, so visitors' first view costs nothing:
+   ```bash
+   DATABASE_URL="postgresql://...neon.tech/neondb?sslmode=require" ytchat --index https://youtu.be/aircAruvnKk https://youtu.be/...
+   ```
+   In Windows PowerShell, set the variable first with `$env:DATABASE_URL="postgresql://..."`, then run `ytchat --index ...`.
+3. **App:** in [Render](https://render.com), choose **New → Blueprint** and pick this repo. [`render.yaml`](render.yaml) sets everything except the two secrets, `GOOGLE_API_KEY` and `DATABASE_URL`, which Render asks for.
+
+Built-in protection for a public link: per-visitor limits (`RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_PER_DAY`), a global daily cap (`GLOBAL_DAILY_LIMIT`) to protect your API quota, and a maximum video length. Cached videos and summaries don't count against the limits. The limits live in memory, which suits a single instance; with several instances, move them to Postgres or Redis.
+
+To let visitors add any video instead, set `ALLOW_NEW_VIDEOS=true` and route transcript requests through a residential proxy with `YT_PROXY_URL`.
+
 ## Configuration
 
 Set these in `.env` or as environment variables.
@@ -108,6 +124,12 @@ Set these in `.env` or as environment variables.
 | `HISTORY_TURNS` | `6` | Previous Q&A pairs sent with each question |
 | `TRANSCRIPT_LANGUAGES` | `en,hi,te` | Caption languages in order of preference |
 | `YT_PROXY_URL` | empty | YouTube often blocks transcript requests from cloud IPs; route through a proxy when deployed |
+| `ALLOW_NEW_VIDEOS` | `true` | `false` serves only videos already in the database (for a public demo) |
+| `MAX_VIDEO_MINUTES` | `120` | Longer videos are refused (they cost more to embed and summarize) |
+| `RATE_LIMIT_PER_MINUTE` / `RATE_LIMIT_PER_DAY` | `10` / `100` | Costly requests per visitor (indexing, new summaries, answers); `0` disables |
+| `GLOBAL_DAILY_LIMIT` | `1000` | Costly requests per day across all visitors; `0` disables |
+| `TRUST_PROXY_HEADERS` | `false` | Set `true` behind a reverse proxy (Render, Cloud Run) so limits see the visitor's real IP |
+| `PORT` / `HOST` | `8000` / `127.0.0.1` | Hosting platforms set `PORT` themselves |
 
 ## API
 

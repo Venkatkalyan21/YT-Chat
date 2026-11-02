@@ -47,8 +47,9 @@ def scripted_llm(*replies: str) -> GenericFakeChatModel:
     return GenericFakeChatModel(messages=iter([AIMessage(content=r) for r in replies]))
 
 
-def make_client(store, llm) -> TestClient:
-    settings = Settings(_env_file=None, embed_provider="hash", chunk_words=40, chunk_overlap_words=10, top_k=3)
+def make_client(store, llm, **overrides) -> TestClient:
+    base = dict(embed_provider="hash", chunk_words=40, chunk_overlap_words=10, top_k=3)
+    settings = Settings(_env_file=None, **{**base, **overrides})
     app = create_app(
         settings=settings,
         store=store,
@@ -194,3 +195,64 @@ def test_model_errors_become_readable_sse_errors(store, failure, expected):
         events = read_events(client.post("/api/chat", json={"video_id": VIDEO_ID, "message": "hi"}))
         assert events[-1][0] == "error"
         assert expected in events[-1][1]["message"]
+
+
+# ----------------------------------------------------------------------------- deployment guards
+
+NO_LIMITS = dict(rate_limit_per_minute=0, rate_limit_per_day=0, global_daily_limit=0)
+
+
+def chat(client, message="How long do cats sleep?", **kwargs):
+    return client.post("/api/chat", json={"video_id": VIDEO_ID, "message": message}, **kwargs)
+
+
+def test_demo_mode_serves_only_preloaded_videos(store):
+    with make_client(store, scripted_llm()) as client:
+        client.post("/api/videos", json={"url": VIDEO_ID})
+
+    # Different chunking than the stored index, to show demo mode never re-indexes.
+    with make_client(store, scripted_llm(), allow_new_videos=False, chunk_words=60) as client:
+        assert client.get("/api/health").json()["allow_new_videos"] is False
+        preloaded = client.post("/api/videos", json={"url": VIDEO_ID})
+        assert preloaded.status_code == 200
+        assert preloaded.json()["index_version"].endswith("words=40|overlap=10")
+        new = client.post("/api/videos", json={"url": "newvideo001"})
+        assert new.status_code == 403
+        assert "pre-loaded videos" in new.json()["detail"]
+        assert client.post("/api/videos", json={"url": VIDEO_ID, "force": True}).status_code == 403
+
+
+def test_long_videos_are_refused(store):
+    with make_client(store, scripted_llm(), max_video_minutes=2) as client:  # the fake video is 5 minutes
+        resp = client.post("/api/videos", json={"url": VIDEO_ID})
+        assert resp.status_code == 422
+        assert "5 minutes long" in resp.json()["detail"]
+        assert client.get("/api/videos").json() == []
+
+
+def test_rate_limits_count_only_costly_requests(store):
+    limits = dict(NO_LIMITS, rate_limit_per_minute=3)
+    with make_client(store, scripted_llm("## TL;DR\nCats [0:10]", "Twelve hours [0:10]."), **limits) as client:
+        assert client.post("/api/videos", json={"url": VIDEO_ID}).status_code == 200  # 1: indexing
+        for _ in range(3):
+            assert client.post("/api/videos", json={"url": VIDEO_ID}).status_code == 200  # cached: free
+        read_events(client.post(f"/api/videos/{VIDEO_ID}/summary"))  # 2: new summary
+        read_events(client.post(f"/api/videos/{VIDEO_ID}/summary"))  # cached: free
+        read_events(chat(client))  # 3: answer
+        limited = chat(client)
+        assert limited.status_code == 429
+        assert "wait" in limited.json()["detail"]
+        assert client.post(f"/api/videos/{VIDEO_ID}/summary").status_code == 200  # cached summary still served
+
+
+def test_visitor_ip_comes_from_proxy_header_only_when_trusted(store):
+    limits = dict(NO_LIMITS, rate_limit_per_minute=1)
+    with make_client(store, scripted_llm("a [0:10]", "b [0:10]"), trust_proxy_headers=True, **limits) as client:
+        client.post("/api/videos", json={"url": VIDEO_ID})  # counted for the test client's own address
+        assert chat(client, headers={"X-Forwarded-For": "1.1.1.1, 10.0.0.1"}).status_code == 200
+        assert chat(client, headers={"X-Forwarded-For": "1.1.1.1"}).status_code == 429
+        assert chat(client, headers={"X-Forwarded-For": "2.2.2.2"}).status_code == 200
+
+    with make_client(store, scripted_llm("c [0:10]"), **limits) as client:  # untrusted: header ignored
+        assert chat(client, headers={"X-Forwarded-For": "3.3.3.3"}).status_code == 200
+        assert chat(client, headers={"X-Forwarded-For": "4.4.4.4"}).status_code == 429

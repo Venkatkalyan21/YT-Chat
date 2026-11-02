@@ -8,6 +8,7 @@ const state = {
   busy: false,
   player: null,
   ytApi: null,
+  demoMode: false, // server only serves pre-loaded videos
 };
 
 const SUGGESTIONS = [
@@ -250,8 +251,9 @@ function openVideo(video) {
 async function refreshRecent() {
   try {
     const videos = await api("/api/videos");
-    const others = videos.filter((v) => !state.video || v.id !== state.video.id).slice(0, 6);
+    const others = videos.filter((v) => !state.video || v.id !== state.video.id).slice(0, state.demoMode ? 12 : 6);
     $("#recent").hidden = others.length === 0;
+    $(".recent-label").textContent = state.demoMode ? "Try a video" : "Recent";
     $("#recent-list").replaceChildren(
       ...others.map((v) => {
         const chip = document.createElement("button");
@@ -459,14 +461,21 @@ $("#regen").addEventListener("click", () => state.video && loadSummary(true));
 $("#new-chat").addEventListener("click", resetChat);
 
 (async function init() {
-  api("/api/health")
-    .then((health) => {
-      const pill = $("#model-pill");
-      pill.textContent = health.model;
-      pill.title = `Embeddings: ${health.embedder} · prompt ${health.prompt_version}`;
-      pill.hidden = false;
-    })
-    .catch(() => {});
+  try {
+    const health = await api("/api/health");
+    const pill = $("#model-pill");
+    pill.textContent = health.model;
+    pill.title = `Embeddings: ${health.embedder} · prompt ${health.prompt_version}`;
+    pill.hidden = false;
+    if (health.allow_new_videos === false) {
+      state.demoMode = true;
+      $(".hero h1").textContent = "Chat with YouTube videos";
+      $(".lede").textContent =
+        "This live demo answers questions about the pre-loaded videos below. Pick one to get a timestamped summary, then ask anything; every answer cites the moments it came from.";
+    }
+  } catch (_) {
+    /* the page still works without the model badge */
+  }
 
   const fromLink = new URLSearchParams(location.search).get("v");
   if (fromLink) loadVideo(fromLink);

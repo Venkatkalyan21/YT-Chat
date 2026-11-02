@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     transcript_languages: str = "en,hi,te"  # preferred caption languages, in order
     yt_proxy_url: str = ""  # YouTube often blocks transcript requests from cloud IPs; route through a proxy there
 
+    # Guards for a public deployment. A 0 limit disables that limit.
+    allow_new_videos: bool = True  # false: serve only videos already in the database (index them with `ytchat --index`)
+    max_video_minutes: int = 120  # longer videos cost more to embed and summarize
+    rate_limit_per_minute: int = 10  # costly requests (indexing, summaries, answers) per visitor
+    rate_limit_per_day: int = 100
+    global_daily_limit: int = 1000  # all visitors combined; protects the API quota
+    trust_proxy_headers: bool = False  # set true behind a reverse proxy (Render, Cloud Run) so limits see real visitor IPs
+
     @property
     def languages(self) -> list[str]:
         return [code.strip() for code in self.transcript_languages.split(",") if code.strip()]

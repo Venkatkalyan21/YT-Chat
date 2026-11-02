@@ -18,8 +18,9 @@ from . import prompts, youtube
 from .config import Settings, get_settings
 from .db import Database
 from .graph import build_qa_graph, history_from_rows
-from .ingest import MetadataFetcher, TranscriptFetcher, ingest_video
+from .ingest import IngestRejected, MetadataFetcher, TranscriptFetcher, ingest_video
 from .models import Embedder, get_chat_model, get_embedder, model_label
+from .ratelimit import RateLimiter
 from .store import Store
 from .summary import stream_summary
 
@@ -52,6 +53,23 @@ class AppContext:
 
     def __post_init__(self):
         self.graph = build_qa_graph(self.llm, self.embedder, self.store, self.settings.top_k)
+        s = self.settings
+        self.limiter = RateLimiter(s.rate_limit_per_minute, s.rate_limit_per_day, s.global_daily_limit)
+
+    def enforce_limit(self, request: Request) -> None:
+        """Count one costly request (model or embedding calls) against the visitor's limits."""
+        message = self.limiter.check(client_key(request, self.settings.trust_proxy_headers))
+        if message:
+            raise HTTPException(429, message)
+
+
+def client_key(request: Request, trust_proxy: bool) -> str:
+    """The visitor's IP. Behind a reverse proxy the socket address is the proxy, so use X-Forwarded-For."""
+    if trust_proxy:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded.strip():
+            return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def sse(event: str, data: dict) -> str:
@@ -144,6 +162,7 @@ def create_app(
             "model": c.model_name,
             "embedder": c.embedder.name,
             "prompt_version": prompts.PROMPT_VERSION,
+            "allow_new_videos": c.settings.allow_new_videos,
         }
 
     @app.post("/api/videos")
@@ -158,7 +177,12 @@ def create_app(
                 fetch_transcript=c.fetch_transcript,
                 fetch_metadata=c.fetch_metadata,
                 force=body.force,
+                before_index=lambda: c.enforce_limit(request),
             )
+        except HTTPException:
+            raise
+        except IngestRejected as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
         except youtube.InvalidVideoUrl as exc:
             raise HTTPException(400, str(exc)) from exc
         except youtube.TranscriptUnavailable as exc:
@@ -180,6 +204,8 @@ def create_app(
         c = ctx(request)
         video = require_video(c, video_id)
         cached = None if refresh else c.store.get_summary(video_id)
+        if not cached:  # serving a cached summary is free; generating one costs a model call
+            c.enforce_limit(request)
 
         def events() -> Iterator[str]:
             if cached:
@@ -207,6 +233,7 @@ def create_app(
     def chat(body: ChatRequest, request: Request) -> StreamingResponse:
         c = ctx(request)
         video = require_video(c, body.video_id)
+        c.enforce_limit(request)
         if body.conversation_id:
             conversation = c.store.get_conversation(body.conversation_id)
             if conversation is None or conversation["video_id"] != body.video_id:

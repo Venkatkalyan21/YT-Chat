@@ -73,7 +73,16 @@ class Database:
         self.dim = dim
         self._local_server = local_server
         _prepare(url, dim)
-        self.pool = ConnectionPool(url, min_size=1, max_size=10, configure=register_vector, open=True)
+        # check_connection: hosted Postgres (Neon, Supabase) closes idle connections, so test each one
+        # before handing it out instead of failing the first request after a quiet period.
+        self.pool = ConnectionPool(
+            url,
+            min_size=1,
+            max_size=5,
+            configure=register_vector,
+            check=ConnectionPool.check_connection,
+            open=True,
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "Database":
