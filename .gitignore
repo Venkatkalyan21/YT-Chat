@@ -9,3 +9,6 @@ build/
 # Secrets and local data
 .env
 .pgdata/
+
+# Editor settings
+.vscode/
