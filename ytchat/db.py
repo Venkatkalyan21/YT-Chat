@@ -1,6 +1,8 @@
 """Postgres connection pool and schema. Falls back to a bundled local Postgres (pgserver) for development."""
 
 import logging
+import subprocess
+import time
 from pathlib import Path
 
 import psycopg
@@ -86,13 +88,34 @@ class Database:
             ) from exc
         data_dir = Path(settings.local_db_dir).resolve()
         log.info("Starting bundled Postgres + pgvector in %s", data_dir)
-        server = pgserver.get_server(data_dir, cleanup_mode="stop")
+        server = _start_local_server(pgserver, data_dir)
         return cls(server.get_uri(), settings.embed_dim, local_server=server)
 
     def close(self) -> None:
         self.pool.close()
         if self._local_server is not None:
             self._local_server.cleanup()
+
+
+def _start_local_server(pgserver, data_dir: Path, wait_s: float = 90.0):
+    """Start (or attach to) the bundled server, waiting out slow starts.
+
+    After an unclean shutdown Postgres runs crash recovery first. On Windows that can take
+    30+ seconds (it retries a locked log file), which is longer than pgserver's fixed 10 s
+    start timeout, and attaching to a server that is still starting fails pgserver's
+    readiness assert. Both clear once recovery finishes, so retry until then.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            return pgserver.get_server(data_dir, cleanup_mode="stop")
+        except (subprocess.TimeoutExpired, AssertionError) as exc:
+            if time.monotonic() > deadline:
+                raise ConfigError(
+                    f"The bundled Postgres in {data_dir} didn't start within {wait_s:.0f}s. See {data_dir / 'log'}."
+                ) from exc
+            log.warning("Bundled Postgres is still starting (recovering from an unclean shutdown?). Waiting...")
+            time.sleep(3)
 
 
 def _prepare(url: str, dim: int) -> None:

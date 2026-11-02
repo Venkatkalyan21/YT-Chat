@@ -38,14 +38,15 @@ class GeminiEmbedder:
     BATCH_SIZE = 100
     MAX_ATTEMPTS = 5
 
-    def __init__(self, model: str, dim: int, api_key: str):
+    def __init__(self, model: str, dim: int, api_key: str, timeout_s: float = 30.0):
         from google import genai
+        from google.genai import types
 
         self.model = model
         self.dim = dim
         self.name = f"google/{model}@{dim}"
         self._legacy = model.startswith("gemini-embedding-001")
-        self._client = genai.Client(api_key=api_key)
+        self._client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_s * 1000)))
 
     def embed_documents(self, texts: Sequence[str], title: str | None = None) -> list[list[float]]:
         if not self._legacy:
@@ -126,7 +127,7 @@ def get_embedder(settings: Settings) -> Embedder:
     if settings.embed_provider == "google":
         if not settings.google_api_key:
             raise ConfigError("GOOGLE_API_KEY is not set. Add it to .env (get one at https://aistudio.google.com/apikey).")
-        return GeminiEmbedder(settings.embed_model, settings.embed_dim, settings.google_api_key)
+        return GeminiEmbedder(settings.embed_model, settings.embed_dim, settings.google_api_key, settings.embed_timeout_s)
     raise ConfigError(f"Unknown EMBED_PROVIDER: {settings.embed_provider}")
 
 
@@ -137,8 +138,13 @@ def get_chat_model(settings: Settings) -> BaseChatModel:
             raise ConfigError("GOOGLE_API_KEY is not set. Add it to .env (get one at https://aistudio.google.com/apikey).")
         from langchain_google_genai import ChatGoogleGenerativeAI
 
+        # max_retries counts total attempts in this library; retries cover 429/5xx, not timeouts.
         return ChatGoogleGenerativeAI(
-            model=settings.llm_model, google_api_key=settings.google_api_key, max_retries=3, **extra
+            model=settings.llm_model,
+            google_api_key=settings.google_api_key,
+            timeout=settings.llm_timeout_s,
+            max_retries=2,
+            **extra,
         )
     if settings.llm_provider == "anthropic":
         if not settings.anthropic_api_key:
@@ -147,7 +153,13 @@ def get_chat_model(settings: Settings) -> BaseChatModel:
             from langchain_anthropic import ChatAnthropic
         except ImportError as exc:
             raise ConfigError('Install the Anthropic extra: pip install -e ".[anthropic]"') from exc
-        return ChatAnthropic(model=settings.llm_model, api_key=settings.anthropic_api_key, max_retries=3, **extra)
+        return ChatAnthropic(
+            model=settings.llm_model,
+            api_key=settings.anthropic_api_key,
+            default_request_timeout=settings.llm_timeout_s,
+            max_retries=2,
+            **extra,
+        )
     raise ConfigError(f"Unknown LLM_PROVIDER: {settings.llm_provider}")
 
 

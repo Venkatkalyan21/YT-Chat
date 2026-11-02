@@ -58,14 +58,29 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _causes(exc: BaseException) -> Iterator[BaseException]:
+    """The exception and everything it wraps; SDKs often wrap the real error."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
 def friendly_error(exc: Exception) -> str:
     """Turn provider errors into something a user can act on."""
-    text = str(exc)
+    chain = list(_causes(exc))
+    text = " | ".join(str(e) for e in chain)
     lowered = text.lower()
+    if any(isinstance(e, TimeoutError) or "timeout" in type(e).__name__.lower() for e in chain) or "timed out" in lowered:
+        return "The model took too long to respond. Try again, or set a faster LLM_MODEL in .env."
     if "api key not valid" in lowered or "api_key_invalid" in lowered or "permission_denied" in lowered:
         return "The model provider rejected the API key. Check GOOGLE_API_KEY in .env."
     if "429" in text or "resource_exhausted" in lowered or "quota" in lowered or "rate limit" in lowered:
         return "Hit the model's rate limit or quota. Wait a minute and try again."
+    if "503" in text or "high demand" in lowered or "overloaded" in lowered:
+        return "The model is overloaded right now. Try again in a minute, or set a different LLM_MODEL in .env."
     if "404" in text and "model" in lowered:
         return "The configured model wasn't found. Check LLM_MODEL in .env."
     return f"Something went wrong while generating ({type(exc).__name__}). See the server log for details."

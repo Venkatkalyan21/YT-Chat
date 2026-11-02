@@ -54,7 +54,7 @@ flowchart LR
 - **The summary skips retrieval.** A one-hour transcript is about 10k words, which fits comfortably in context. The summarizer sees the whole transcript in non-overlapping 60-second windows, so it can't miss sections the way top-*k* retrieval would.
 - **Embedding details from Google's docs.** `gemini-embedding-2` merges a list of inputs sent in one request into a single embedding, so each chunk is sent as its own `Content`. It takes the retrieval task as a text prefix (`title: ... | text: ...` for documents, `task: question answering | query: ...` for queries) instead of `task_type`. 768 dimensions keeps the option of an HNSW index (pgvector caps those at 2000).
 - **Citations are verified, not trusted.** A citation is valid only if its time falls inside a passage the model was given. This becomes the citation-accuracy metric in Phase 3.
-- **Pinned model ids.** `gemini-3.8-flash` rather than a `-latest` alias, so eval results stay comparable over time.
+- **Pinned model ids.** `gemini-3.6-flash` rather than a `-latest` alias, so eval results stay comparable over time. It was picked by measurement: in November 2026 testing, `gemini-3.8-flash` (and `gemini-flash-latest`, which points to it) returned "high demand" errors or timed out, `gemini-2.5-flash` was closed to new API keys, and `gemini-3.6-flash` answered in about 5 seconds.
 - **Index versioning.** Each video records the embedder and chunking settings it was indexed with. Changing them re-indexes on the next load, which keeps experiments clean.
 - **Dependency injection everywhere.** `create_app()` accepts the model, embedder, store and transcript fetcher, so the API tests run the full flow against a real Postgres with a scripted model and no API keys.
 
@@ -72,7 +72,7 @@ pip install -e ".[local,dev]"
 ```
 
 ```bash
-cp .env.example .env    # then put your key in GOOGLE_API_KEY
+ytchat --set-key    # paste your key at the hidden prompt; it's saved to .env
 ```
 
 ```bash
@@ -99,7 +99,8 @@ Set these in `.env` or as environment variables.
 | Variable | Default | Notes |
 |---|---|---|
 | `GOOGLE_API_KEY` | (required) | Also accepted as `GEMINI_API_KEY` |
-| `LLM_PROVIDER` / `LLM_MODEL` | `google` / `gemini-3.8-flash` | `anthropic` needs the `anthropic` extra and `ANTHROPIC_API_KEY` |
+| `LLM_PROVIDER` / `LLM_MODEL` | `google` / `gemini-3.6-flash` | `anthropic` needs the `anthropic` extra and `ANTHROPIC_API_KEY` |
+| `LLM_TIMEOUT_S` / `EMBED_TIMEOUT_S` | `60` / `30` | Per-request limits, so a slow or overloaded model shows an error instead of hanging |
 | `EMBED_PROVIDER` / `EMBED_MODEL` / `EMBED_DIM` | `google` / `gemini-embedding-2` / `768` | `hash` is an offline embedder for tests |
 | `DATABASE_URL` | empty | Empty means the bundled local Postgres |
 | `CHUNK_WORDS` / `CHUNK_OVERLAP_WORDS` | `150` / `30` | Chunk size and overlap in words |
@@ -128,7 +129,7 @@ Interactive docs at `/docs`.
 pytest
 ```
 
-40 tests: link parsing, chunking invariants, citation checking, and end-to-end API flows (index, summary streaming and caching, cited answers, follow-up rewriting, error handling) against a real Postgres + pgvector. They need no API keys. Set `TEST_DATABASE_URL` to use your own database instead of a throwaway bundled one.
+43 tests: link parsing, chunking invariants, citation checking, and end-to-end API flows (index, summary streaming and caching, cited answers, follow-up rewriting, readable errors for rate limits, bad keys, overloaded models and timeouts) against a real Postgres + pgvector. They need no API keys. Set `TEST_DATABASE_URL` to use your own database instead of a throwaway bundled one.
 
 ## Roadmap
 

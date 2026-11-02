@@ -15,8 +15,10 @@ class Settings(BaseSettings):
 
     # Chat model. Pin an exact model id so eval results stay reproducible.
     llm_provider: str = "google"  # google | anthropic
-    llm_model: str = "gemini-3.8-flash"
+    llm_model: str = "gemini-3.6-flash"
     llm_temperature: float | None = None  # None = provider default
+    llm_timeout_s: float = 60.0  # per request; without one, a slow model leaves the UI waiting forever
+    embed_timeout_s: float = 30.0
 
     # Embeddings. `hash` is an offline, keyless embedder for tests and demos.
     embed_provider: str = "google"  # google | hash

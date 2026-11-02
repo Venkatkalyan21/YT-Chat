@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from .chunking import Chunk
 from .store import RetrievedChunk
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2: chapters follow topic shifts instead of one per transcript passage
 
 SUMMARY_SYSTEM = """You summarize YouTube videos from their transcript.
 The transcript is split into passages; each starts with its timestamp in square brackets, like [12:34].
@@ -20,6 +20,7 @@ Two or three sentences on what the video is about and its main conclusion.
 
 ## Chapters
 - [12:34] Short chapter title: one line on what this part covers.
+Use 3 to 8 chapters, one per major topic shift. Several passages usually belong to one chapter; never make one chapter per passage.
 
 Rules:
 - Use only information from the transcript. Do not add outside facts.

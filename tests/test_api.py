@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -160,16 +161,36 @@ def test_chat_rejects_unknown_video_and_foreign_conversation(store):
         assert client.get("/api/conversations/not-a-uuid").status_code == 404
 
 
-def test_model_errors_become_readable_sse_errors(store):
+def _wrapped_timeout() -> Exception:
+    """A timeout wrapped the way SDKs wrap it, so only the cause chain reveals it."""
+    try:
+        try:
+            raise httpx.ReadTimeout("The read operation timed out")
+        except httpx.ReadTimeout as inner:
+            raise RuntimeError("Error calling model") from inner
+    except RuntimeError as outer:
+        return outer
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        (RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded"), "rate limit"),
+        (RuntimeError("400 API key not valid. Please pass a valid API key."), "rejected the API key"),
+        (RuntimeError("503 UNAVAILABLE. This model is currently experiencing high demand."), "overloaded"),
+        (_wrapped_timeout(), "took too long"),
+    ],
+)
+def test_model_errors_become_readable_sse_errors(store, failure, expected):
     class Broken(GenericFakeChatModel):
         def _generate(self, *args, **kwargs):
-            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+            raise failure
 
         def _stream(self, *args, **kwargs):
-            raise RuntimeError("429 RESOURCE_EXHAUSTED: quota exceeded")
+            raise failure
 
     with make_client(store, Broken(messages=iter([]))) as client:
         client.post("/api/videos", json={"url": VIDEO_ID})
         events = read_events(client.post("/api/chat", json={"video_id": VIDEO_ID, "message": "hi"}))
         assert events[-1][0] == "error"
-        assert "rate limit" in events[-1][1]["message"]
+        assert expected in events[-1][1]["message"]
